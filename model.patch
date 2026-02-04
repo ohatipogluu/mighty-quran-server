@@ -1,0 +1,272 @@
+diff --git a/model.patch b/model.patch
+index 8304b60..e69de29 100644
+--- a/model.patch
++++ b/model.patch
+@@ -1,267 +0,0 @@
+-diff --git a/backend/server.py b/backend/server.py
+-index 7810636..f968c41 100644
+---- a/backend/server.py
+-+++ b/backend/server.py
+-@@ -350,24 +350,105 @@ async def get_juz(juz_number: int):
+- 
+- # ================== ZAKAT CALCULATOR ==================
+- 
+--# Gold price per gram in TRY (approximate - should be fetched from live API)
+--GOLD_PRICE_PER_GRAM = 2500  # TRY
+--SILVER_PRICE_PER_GRAM = 30  # TRY
+-+# Static fallback prices (updated regularly)
+-+GOLD_PRICE_PER_GRAM = 2850  # TRY - fallback
+-+SILVER_PRICE_PER_GRAM = 35  # TRY - fallback
+- NISAB_GOLD_GRAMS = 80.18  # 7.5 tola = ~80.18 grams
+- NISAB_SILVER_GRAMS = 561.26  # 52.5 tola = ~561.26 grams
+- 
+-+async def fetch_live_gold_price() -> dict:
+-+    """
+-+    Fetch LIVE gold and silver prices from multiple sources.
+-+    Returns: { 'gold': price_per_gram_TRY, 'silver': price_per_gram_TRY, 'source': 'api_name' }
+-+    """
+-+    try:
+-+        async with httpx.AsyncClient(timeout=10.0) as client:
+-+            # Try BigPara API (Turkish market data)
+-+            try:
+-+                response = await client.get(
+-+                    "https://bigpara.hurriyet.com.tr/api/v1/altincisi/golddetail"
+-+                )
+-+                if response.status_code == 200:
+-+                    data = response.json()
+-+                    # Extract gram gold price
+-+                    gold_price = float(data.get('data', {}).get('gram', {}).get('alis', GOLD_PRICE_PER_GRAM))
+-+                    silver_price = SILVER_PRICE_PER_GRAM  # BigPara doesn't have silver
+-+                    return {'gold': gold_price, 'silver': silver_price, 'source': 'BigPara'}
+-+            except Exception as e:
+-+                logging.warning(f"BigPara API failed: {e}")
+-+            
+-+            # Fallback: Try Gold API with TRY conversion
+-+            try:
+-+                # Get gold in USD
+-+                gold_usd_response = await client.get(
+-+                    "https://api.gold-api.com/price/XAU"
+-+                )
+-+                # Get USD/TRY rate
+-+                usd_try_response = await client.get(
+-+                    "https://api.exchangerate-api.com/v4/latest/USD"
+-+                )
+-+                
+-+                if gold_usd_response.status_code == 200 and usd_try_response.status_code == 200:
+-+                    gold_data = gold_usd_response.json()
+-+                    usd_try = usd_try_response.json().get('rates', {}).get('TRY', 32)
+-+                    
+-+                    # Convert from oz to gram and USD to TRY
+-+                    gold_per_oz_usd = gold_data.get('price', 2000)
+-+                    gold_per_gram_usd = gold_per_oz_usd / 31.1035
+-+                    gold_per_gram_try = gold_per_gram_usd * usd_try
+-+                    
+-+                    return {
+-+                        'gold': round(gold_per_gram_try, 2),
+-+                        'silver': SILVER_PRICE_PER_GRAM,
+-+                        'source': 'Gold-API'
+-+                    }
+-+            except Exception as e:
+-+                logging.warning(f"Gold API failed: {e}")
+-+            
+-+    except Exception as e:
+-+        logging.error(f"All gold price APIs failed: {e}")
+-+    
+-+    # Return fallback prices
+-+    return {
+-+        'gold': GOLD_PRICE_PER_GRAM,
+-+        'silver': SILVER_PRICE_PER_GRAM,
+-+        'source': 'fallback'
+-+    }
+-+
+-+@api_router.get("/gold-price")
+-+async def get_gold_price():
+-+    """Get current live gold and silver prices"""
+-+    prices = await fetch_live_gold_price()
+-+    return {
+-+        "gold_price_per_gram": prices['gold'],
+-+        "silver_price_per_gram": prices['silver'],
+-+        "source": prices['source'],
+-+        "currency": "TRY",
+-+        "nisab_gold_grams": NISAB_GOLD_GRAMS,
+-+        "nisab_silver_grams": NISAB_SILVER_GRAMS,
+-+        "nisab_gold_value": round(NISAB_GOLD_GRAMS * prices['gold'], 2),
+-+        "nisab_silver_value": round(NISAB_SILVER_GRAMS * prices['silver'], 2),
+-+    }
+-+
+- @api_router.post("/zakat/calculate", response_model=ZakatResponse)
+- async def calculate_zakat(request: ZakatRequest):
+--    """Calculate Zakat based on assets"""
+-+    """Calculate Zakat based on assets with LIVE gold prices"""
+-     try:
+-+        # Fetch LIVE gold prices
+-+        prices = await fetch_live_gold_price()
+-+        gold_price = prices['gold']
+-+        silver_price = prices['silver']
+-+        
+-+        logging.info(f"Zakat calc using {prices['source']} prices: Gold={gold_price}, Silver={silver_price}")
+-+        
+-         # Calculate total assets in currency
+--        gold_value = request.gold_grams * GOLD_PRICE_PER_GRAM
+--        silver_value = request.silver_grams * SILVER_PRICE_PER_GRAM
+-+        gold_value = request.gold_grams * gold_price
+-+        silver_value = request.silver_grams * silver_price
+-         total_assets = gold_value + silver_value + request.cash + request.other_assets
+-         
+-         # Calculate Nisab thresholds in currency
+--        nisab_gold = NISAB_GOLD_GRAMS * GOLD_PRICE_PER_GRAM
+--        nisab_silver = NISAB_SILVER_GRAMS * SILVER_PRICE_PER_GRAM
+-+        nisab_gold = NISAB_GOLD_GRAMS * gold_price
+-+        nisab_silver = NISAB_SILVER_GRAMS * silver_price
+-         
+-         # Use lower nisab (silver) for calculation
+-         nisab_threshold = nisab_silver
+-diff --git a/model.patch b/model.patch
+-index 90c77a0..79184dd 100644
+---- a/model.patch
+-+++ b/model.patch
+-@@ -1,144 +0,0 @@
+--diff --git a/frontend/app/index.tsx b/frontend/app/index.tsx
+--index 2ff28cf..da0aea8 100644
+----- a/frontend/app/index.tsx
+--+++ b/frontend/app/index.tsx
+--@@ -20,8 +20,9 @@ import { getPrayerTimes, PrayerTimesResponse } from '../src/services/api';
+-- 
+-- const { width } = Dimensions.get('window');
+-- 
+---// DARK GLASS THEME - Forced Dark Colors
+---const DARK_GLASS = 'rgba(20, 30, 40, 0.9)';
+--+// DARK GLASS THEME - HIGH OPACITY to prevent overlap
+--+const SCREEN_BG = 'rgba(15, 23, 42, 0.98)';
+--+const DARK_GLASS = 'rgba(20, 30, 40, 0.95)';
+-- const GOLD = '#D4AF37';
+-- 
+-- const PRAYER_NAMES: Record<string, Record<string, string>> = {
+--@@ -258,15 +259,13 @@ export default function HomeScreen() {
+-- const styles = StyleSheet.create({
+--   container: {
+--     flex: 1,
+---    backgroundColor: 'transparent',
+--+    backgroundColor: SCREEN_BG,
+--   },
+--   scrollView: {
+--     flex: 1,
+---    backgroundColor: 'transparent',
+--   },
+--   scrollContent: {
+--     paddingBottom: 120,
+---    backgroundColor: 'transparent',
+--   },
+--   header: {
+--     paddingHorizontal: SPACING.lg,
+--diff --git a/model.patch b/model.patch
+--index c400767..e69de29 100644
+----- a/model.patch
+--+++ b/model.patch
+--@@ -1,106 +0,0 @@
+---diff --git a/model.patch b/model.patch
+---index 200eb9b..e69de29 100644
+------ a/model.patch
+---+++ b/model.patch
+---@@ -1,101 +0,0 @@
+----diff --git a/test_result.md b/test_result.md
+----index c0ce86e..50783ee 100644
+------- a/test_result.md
+----+++ b/test_result.md
+----@@ -111,11 +111,14 @@ backend:
+----     file: "server.py"
+----     stuck_count: 0
+----     priority: "high"
+-----    needs_retesting: true
+----+    needs_retesting: false
+----     status_history:
+----       - working: true
+----         agent: "main"
+----         comment: "Prayer times calculation API working with Diyanet method. Tested with Istanbul coordinates."
+----+      - working: true
+----+        agent: "testing"
+----+        comment: "✅ COMPREHENSIVE TEST PASSED - POST /api/prayer-times tested with Istanbul coordinates (41.0082, 28.9784). Returns all required prayer times (fajr: 03:43, sunrise: 05:18, dhuhr: 10:16, asr: 12:54, maghrib: 15:15, isha: 16:45) in correct HH:MM format. Date and location fields properly included. Diyanet calculation method working correctly."
+---- 
+----   - task: "Qibla Direction API"
+----     implemented: true
+----@@ -123,11 +126,14 @@ backend:
+----     file: "server.py"
+----     stuck_count: 0
+----     priority: "high"
+-----    needs_retesting: true
+----+    needs_retesting: false
+----     status_history:
+----       - working: true
+----         agent: "main"
+----         comment: "Qibla direction calculation using great circle formula. Returns direction in degrees and distance to Kaaba."
+----+      - working: true
+----+        agent: "testing"
+----+        comment: "✅ COMPREHENSIVE TEST PASSED - POST /api/qibla tested with Istanbul coordinates. Returns accurate qibla direction (151.62°) and distance to Kaaba (2400.33 km). Great circle formula calculation working correctly. Direction within valid 0-360° range."
+---- 
+----   - task: "AI Chat API with Gemini"
+----     implemented: true
+----@@ -135,23 +141,41 @@ backend:
+----     file: "server.py"
+----     stuck_count: 0
+----     priority: "high"
+-----    needs_retesting: true
+----+    needs_retesting: false
+----     status_history:
+----       - working: true
+----         agent: "main"
+----         comment: "Gemini AI integration working with strict Quranic search mode. Uses Emergent LLM key. Tested with Turkish query about patience (sabr)."
+----+      - working: true
+----+        agent: "testing"
+----+        comment: "✅ COMPREHENSIVE TEST PASSED - POST /api/chat tested with Turkish query 'Sabr hakkında ayet'. Gemini AI integration working perfectly. Returns 2136-character response with proper Quranic verse format including Arabic text and Turkish translation. Session management working correctly. Chat history storage and retrieval functioning properly."
+---- 
+----   - task: "User Progress API"
+----     implemented: true
+-----    working: NA
+----+    working: true
+----     file: "server.py"
+----     stuck_count: 0
+----     priority: "medium"
+-----    needs_retesting: true
+----+    needs_retesting: false
+----     status_history:
+----       - working: NA
+----         agent: "main"
+----         comment: "User progress tracking for Quran reading implemented. Needs testing."
+----+      - working: true
+----+        agent: "testing"
+----+        comment: "✅ COMPREHENSIVE TEST PASSED - Both GET /api/user/progress/{user_id} and POST /api/user/progress tested successfully. GET creates default progress for new users with proper fields (user_id, last_read_page, last_read_surah, last_read_ayah, bookmarks, updated_at). POST updates progress correctly (tested with page 42, surah 2, ayah 255) and changes are persisted. MongoDB integration working properly."
+----+
+----+  - task: "Chat History APIs"
+----+    implemented: true
+----+    working: true
+----+    file: "server.py"
+----+    stuck_count: 0
+----+    priority: "medium"
+----+    needs_retesting: false
+----+    status_history:
+----+      - working: true
+----+        agent: "testing"
+----+        comment: "✅ COMPREHENSIVE TEST PASSED - GET /api/chat/history/{session_id} returns proper message history with correct role/content structure. DELETE /api/chat/history/{session_id} successfully clears chat history and verification confirms deletion. Both endpoints working correctly with proper MongoDB integration."
+---- 
+---- frontend:
+----   - task: "Home Screen with Prayer Times"
+----@@ -221,15 +245,13 @@ metadata:
+----   run_ui: false
+---- 
+---- test_plan:
+-----  current_focus:
+-----    - "Prayer Times API"
+-----    - "Qibla Direction API"
+-----    - "AI Chat API with Gemini"
+-----    - "User Progress API"
+----+  current_focus: []
+----   stuck_tasks: []
+-----  test_all: true
+----+  test_all: false
+----   test_priority: "high_first"
+---- 
+---- agent_communication:
+----   - agent: "main"
+----     message: "Initial implementation complete. Please test all backend APIs: 1) POST /api/prayer-times with latitude/longitude, 2) POST /api/qibla with latitude/longitude, 3) POST /api/chat with session_id, message, language, 4) GET/POST /api/user/progress. All APIs should be working based on manual curl tests."
+----+  - agent: "testing"
+----+    message: "✅ ALL BACKEND TESTS PASSED (100% success rate) - Comprehensive testing completed for all 7 backend APIs. Prayer Times, Qibla Direction, AI Chat with Gemini, Chat History (GET/DELETE), and User Progress (GET/POST) all working correctly. Minor ObjectId serialization warning in logs but doesn't affect functionality. All APIs returning proper responses with correct data formats. Backend is production-ready."

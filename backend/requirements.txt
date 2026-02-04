@@ -1,0 +1,29 @@
+# ============================================
+# MIGHTY QURAN - BACKEND DEPENDENCIES
+# Production Ready - Render.com Compatible
+# Pydantic V1 ile FastAPI uyumu sağlandı
+# ============================================
+
+# Web Framework (Pydantic V1 uyumlu)
+fastapi==0.109.0
+uvicorn==0.27.0
+pydantic==1.10.13
+
+# Utilities
+python-multipart
+python-dotenv
+requests
+httpx>=0.25.0
+
+# Google AI
+google-generativeai
+
+# MongoDB (Optional - for chat history)
+motor
+pymongo
+
+# Geolocation (Python 3.11 compatible)
+geopy>=2.4.0
+
+# Emergent LLM Integration
+emergentintegrations
