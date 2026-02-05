@@ -59,24 +59,39 @@ if LLM_PROVIDER == 'emergent':
 # ============================================================
 client = None
 db = None
-DB_CONNECTED = True
+DB_CONNECTED = False
 
 def init_database():
-    """Initialize MongoDB connection with error handling - DISABLED for Stability"""
+    """Initialize MongoDB connection with error handling"""
     global client, db, DB_CONNECTED
+    
     try:
-        # Veritabanını tamamen devre dışı bırakıyoruz ki çakışma olmasın
-        DB_CONNECTED = False 
-        db = None
-        client = None
-        logger.info("Database features are currently disabled for stability.")
-        return False
+        mongo_url = os.environ.get('MONGO_URL')
+        db_name = os.environ.get('DB_NAME', 'islamic_portal')
+        
+        if not mongo_url:
+            logger.warning("MONGO_URL not set - database features disabled")
+            return False
+        
+        # Create client with timeout settings
+        client = AsyncIOMotorClient(
+            mongo_url,
+            serverSelectionTimeoutMS=5000,  # 5 second timeout
+            connectTimeoutMS=5000,
+            socketTimeoutMS=5000
+        )
+        db = client[db_name]
+        DB_CONNECTED = True
+        logger.info(f"MongoDB connection initialized: {db_name}")
+        return True
+        
     except Exception as e:
-        logger.error(f"Database init error: {e}")
+        logger.error(f"MongoDB connection failed: {e}")
+        logger.warning("Server will continue without database - some features may be limited")
         DB_CONNECTED = False
         return False
 
-# Veritabanını başlatmayı dene
+# Initialize database (non-blocking)
 init_database()
 
 # Create the main app
@@ -625,56 +640,143 @@ async def clear_chat_history(session_id: str):
 
 # ================== QURAN TRANSLATION API (DYNAMIC LANGUAGE) ==================
 
-# ================== QURAN TRANSLATION API (DIRECT FETCH) ==================
+# Translation editions for different languages
 TRANSLATION_EDITIONS = {
-    "tr": "tr.diyanet",
-    "en": "en.sahih",
-    "ar": "ar.muyassar"
+    "tr": "tr.diyanet",      # Turkish - Diyanet İşleri Başkanlığı
+    "en": "en.sahih",        # English - Sahih International
+    "ar": "ar.muyassar",     # Arabic - Tafseer Muyassar (simplified)
+    "es": "es.cortes",       # Spanish - Julio Cortes
+    "fr": "fr.hamidullah",   # French - Hamidullah
+    "de": "de.aburida",      # German - Abu Rida
+    "id": "id.indonesian",   # Indonesian
+    "ur": "ur.jalandhry",    # Urdu - Jalandhry
+    "ru": "ru.kuliev",       # Russian - Kuliev
 }
 
 @api_router.get("/quran/meal/{page_number}")
 async def get_meal_for_page(page_number: int, lang: str = "tr"):
-    """Diyanet'ten doğrudan sayfa meali çeker"""
-    edition = TRANSLATION_EDITIONS.get(lang, "tr.diyanet")
+    """
+    Get Quran translation for a specific page.
+    
+    Parameters:
+    - page_number: 1-614 (Diyanet Mushaf pages)
+    - lang: Language code (tr, en, ar, de, fr, id, ur, ru). Default: tr
+    
+    Editions:
+    - Turkish (tr): Diyanet İşleri Başkanlığı
+    - English (en): Sahih International
+    - Arabic (ar): Tafseer Muyassar
+    """
+    if page_number < 1 or page_number > 614:
+        raise HTTPException(status_code=400, detail="Invalid page number (1-614)")
+    
+    # Select translation edition based on language
+    edition = TRANSLATION_EDITIONS.get(lang, TRANSLATION_EDITIONS["en"])
+    
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            url = f"{QURAN_API_BASE}/page/{page_number}/editions/quran-uthmani,{edition}"
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                return {"status": "error", "message": "API cevap vermiyor"}
-            data = resp.json().get("data", [])
+        # Page mapping: Our 614-page mushaf to API's 604-page standard
+        # Direct 1:1 mapping for pages 1-604
+        standard_page = page_number
+        if standard_page > 604:
+            standard_page = 604
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get Arabic text (always)
+            arabic_url = f"{QURAN_API_BASE}/page/{standard_page}/quran-uthmani"
+            arabic_resp = await client.get(arabic_url)
+            
+            # Get translation in requested language
+            translation_url = f"{QURAN_API_BASE}/page/{standard_page}/{edition}"
+            translation_resp = await client.get(translation_url)
+            
+            if arabic_resp.status_code != 200:
+                raise HTTPException(status_code=404, detail="Page not found")
+            
+            arabic_data = arabic_resp.json()
+            translation_data = translation_resp.json() if translation_resp.status_code == 200 else None
+            
             ayahs = []
-            for i, ayah in enumerate(data[0].get('ayahs', [])):
-                ayahs.append({
+            arabic_ayahs = arabic_data.get('data', {}).get('ayahs', [])
+            translation_ayahs = translation_data.get('data', {}).get('ayahs', []) if translation_data else []
+            
+            for i, ayah in enumerate(arabic_ayahs):
+                ayah_data = {
                     "number": ayah.get('number'),
                     "numberInSurah": ayah.get('numberInSurah'),
+                    "surah": ayah.get('surah', {}).get('number'),
+                    "surahName": ayah.get('surah', {}).get('name'),
+                    "surahEnglishName": ayah.get('surah', {}).get('englishName'),
                     "arabic": ayah.get('text'),
-                    "translation": data[1].get('ayahs', [])[i].get('text') if len(data) > 1 else ""
-                })
-            return {"page": page_number, "ayahs": ayahs}
+                    "translation": translation_ayahs[i].get('text') if i < len(translation_ayahs) else ""
+                }
+                ayahs.append(ayah_data)
+            
+            return {
+                "page": page_number,
+                "standard_page": standard_page,
+                "language": lang,
+                "edition": edition,
+                "ayahs": ayahs,
+                "total_ayahs": len(ayahs)
+            }
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logging.error(f"Translation fetch error for {lang}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/quran/meal/surah/{surah_number}")
 async def get_meal_for_surah(surah_number: int):
-    """Sure mealini doğrudan getirir"""
+    """
+    Get Turkish translation (Meal) for a complete surah.
+    """
+    if surah_number < 1 or surah_number > 114:
+        raise HTTPException(status_code=400, detail="Invalid surah number (1-114)")
+    
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            url = f"{QURAN_API_BASE}/surah/{surah_number}/editions/quran-uthmani,tr.diyanet"
-            resp = await client.get(url)
-            data = resp.json().get("data", [])
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Get Arabic text
+            arabic_url = f"{QURAN_API_BASE}/surah/{surah_number}/quran-uthmani"
+            arabic_resp = await client.get(arabic_url)
+            
+            # Get Turkish translation (Diyanet)
+            turkish_url = f"{QURAN_API_BASE}/surah/{surah_number}/tr.diyanet"
+            turkish_resp = await client.get(turkish_url)
+            
+            if arabic_resp.status_code != 200:
+                raise HTTPException(status_code=404, detail="Surah not found")
+            
+            arabic_data = arabic_resp.json()
+            turkish_data = turkish_resp.json() if turkish_resp.status_code == 200 else None
+            
+            surah_info = arabic_data.get('data', {})
+            arabic_ayahs = surah_info.get('ayahs', [])
+            turkish_ayahs = turkish_data.get('data', {}).get('ayahs', []) if turkish_data else []
+            
             ayahs = []
-            for i, ayah in enumerate(data[0].get('ayahs', [])):
-                ayahs.append({
+            for i, ayah in enumerate(arabic_ayahs):
+                ayah_data = {
                     "number": ayah.get('number'),
                     "numberInSurah": ayah.get('numberInSurah'),
                     "arabic": ayah.get('text'),
-                    "translation": data[1].get('ayahs', [])[i].get('text') if len(data) > 1 else ""
-                })
-            return {"surah": surah_number, "name": data[0].get('name'), "ayahs": ayahs}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+                    "turkish": turkish_ayahs[i].get('text') if i < len(turkish_ayahs) else ""
+                }
+                ayahs.append(ayah_data)
             
+            return {
+                "surah": surah_number,
+                "name": surah_info.get('name'),
+                "englishName": surah_info.get('englishName'),
+                "englishNameTranslation": surah_info.get('englishNameTranslation'),
+                "revelationType": surah_info.get('revelationType'),
+                "numberOfAyahs": surah_info.get('numberOfAyahs'),
+                "ayahs": ayahs
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Surah meal fetch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ================== QURAN PAGE IMAGE SERVING ==================
 
@@ -708,12 +810,12 @@ app.add_middleware(
 # ============================================================
 # HEALTH CHECK ENDPOINT
 # ============================================================
-@api_router.get("/health")
+@app.get("/health")
 async def health_check():
     """Health check endpoint for Render.com and other platforms"""
     return {
         "status": "healthy",
-        "database": "connected" if DB_CONNECTED else "connected",
+        "database": "connected" if DB_CONNECTED else "disconnected",
         "port": PORT
     }
 
@@ -736,28 +838,6 @@ async def shutdown_db_client():
 # ============================================================
 # MAIN ENTRY POINT (for Render.com and direct execution)
 # ============================================================
-# ============================================================
-# HEALTH & ROOT CHECK (Both for / and /api)
-# ============================================================
-@app.get("/")
-@api_router.get("/")
-async def root():
-    """Redirect or answer to root requests"""
-    return {
-        "message": "Islamic Portal API - Bismillah", 
-        "status": "healthy", 
-        "database": "connected"
-    }
-
-@app.get("/health")
-@api_router.get("/health")
-async def health_check():
-    """Health check for both paths"""
-    return {
-        "status": "healthy",
-        "database": "connected",
-        "port": PORT
-    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
