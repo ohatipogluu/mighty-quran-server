@@ -838,6 +838,28 @@ async def shutdown_db_client():
 # ============================================================
 # MAIN ENTRY POINT (for Render.com and direct execution)
 # ============================================================
+# ============================================================
+# HEALTH & ROOT CHECK (Both for / and /api)
+# ============================================================
+@app.get("/")
+@api_router.get("/")
+async def root():
+    """Redirect or answer to root requests"""
+    return {
+        "message": "Islamic Portal API - Bismillah", 
+        "status": "healthy", 
+        "database": "connected"
+    }
+
+@app.get("/health")
+@api_router.get("/health")
+async def health_check():
+    """Health check for both paths"""
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "port": PORT
+    }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
