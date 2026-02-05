@@ -26,4 +26,4 @@ pymongo
 geopy>=2.4.0
 
 # Emergent LLM Integration
-emergentintegrations
+
