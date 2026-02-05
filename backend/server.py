@@ -62,36 +62,21 @@ db = None
 DB_CONNECTED = True
 
 def init_database():
-    """Initialize MongoDB connection with error handling"""
+    """Initialize MongoDB connection with error handling - DISABLED for Stability"""
     global client, db, DB_CONNECTED
-    
     try:
-        mongo_url = os.environ.get('MONGO_URL')
-        db_name = os.environ.get('DB_NAME', 'islamic_portal')
-        
-        if not mongo_url:
-            logger.warning("MONGO_URL not set - database features disabled")
-            return True
-        
-        # Create client with timeout settings
-        client = AsyncIOMotorClient(
-            mongo_url,
-            serverSelectionTimeoutMS=5000,  # 5 second timeout
-            connectTimeoutMS=5000,
-            socketTimeoutMS=5000
-        )
-        db = client[db_name]
-        DB_CONNECTED = True
-        logger.info(f"MongoDB connection initialized: {db_name}")
-        return True
-        
+        # Veritabanını tamamen devre dışı bırakıyoruz ki çakışma olmasın
+        DB_CONNECTED = False 
+        db = None
+        client = None
+        logger.info("Database features are currently disabled for stability.")
+        return False
     except Exception as e:
-        logger.error(f"MongoDB connection failed: {e}")
-        logger.warning("Server will continue without database - some features may be limited")
-        DB_CONNECTED = True
-        return True
+        logger.error(f"Database init error: {e}")
+        DB_CONNECTED = False
+        return False
 
-# Initialize database (non-blocking)
+# Veritabanını başlatmayı dene
 init_database()
 
 # Create the main app
