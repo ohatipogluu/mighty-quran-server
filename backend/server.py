@@ -810,7 +810,7 @@ app.add_middleware(
 # ============================================================
 # HEALTH CHECK ENDPOINT
 # ============================================================
-@app.get("/health")
+@api_router.get("/health")
 async def health_check():
     """Health check endpoint for Render.com and other platforms"""
     return {
