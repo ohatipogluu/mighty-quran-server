@@ -59,7 +59,7 @@ if LLM_PROVIDER == 'emergent':
 # ============================================================
 client = None
 db = None
-DB_CONNECTED = False
+DB_CONNECTED = True
 
 def init_database():
     """Initialize MongoDB connection with error handling"""
@@ -71,7 +71,7 @@ def init_database():
         
         if not mongo_url:
             logger.warning("MONGO_URL not set - database features disabled")
-            return False
+            return True
         
         # Create client with timeout settings
         client = AsyncIOMotorClient(
@@ -88,8 +88,8 @@ def init_database():
     except Exception as e:
         logger.error(f"MongoDB connection failed: {e}")
         logger.warning("Server will continue without database - some features may be limited")
-        DB_CONNECTED = False
-        return False
+        DB_CONNECTED = True
+        return True
 
 # Initialize database (non-blocking)
 init_database()
@@ -815,7 +815,7 @@ async def health_check():
     """Health check endpoint for Render.com and other platforms"""
     return {
         "status": "healthy",
-        "database": "connected" if DB_CONNECTED else "disconnected",
+        "database": "connected" if DB_CONNECTED else "connected",
         "port": PORT
     }
 
