@@ -625,143 +625,56 @@ async def clear_chat_history(session_id: str):
 
 # ================== QURAN TRANSLATION API (DYNAMIC LANGUAGE) ==================
 
-# Translation editions for different languages
+# ================== QURAN TRANSLATION API (DIRECT FETCH) ==================
 TRANSLATION_EDITIONS = {
-    "tr": "tr.diyanet",      # Turkish - Diyanet İşleri Başkanlığı
-    "en": "en.sahih",        # English - Sahih International
-    "ar": "ar.muyassar",     # Arabic - Tafseer Muyassar (simplified)
-    "es": "es.cortes",       # Spanish - Julio Cortes
-    "fr": "fr.hamidullah",   # French - Hamidullah
-    "de": "de.aburida",      # German - Abu Rida
-    "id": "id.indonesian",   # Indonesian
-    "ur": "ur.jalandhry",    # Urdu - Jalandhry
-    "ru": "ru.kuliev",       # Russian - Kuliev
+    "tr": "tr.diyanet",
+    "en": "en.sahih",
+    "ar": "ar.muyassar"
 }
 
 @api_router.get("/quran/meal/{page_number}")
 async def get_meal_for_page(page_number: int, lang: str = "tr"):
-    """
-    Get Quran translation for a specific page.
-    
-    Parameters:
-    - page_number: 1-614 (Diyanet Mushaf pages)
-    - lang: Language code (tr, en, ar, de, fr, id, ur, ru). Default: tr
-    
-    Editions:
-    - Turkish (tr): Diyanet İşleri Başkanlığı
-    - English (en): Sahih International
-    - Arabic (ar): Tafseer Muyassar
-    """
-    if page_number < 1 or page_number > 614:
-        raise HTTPException(status_code=400, detail="Invalid page number (1-614)")
-    
-    # Select translation edition based on language
-    edition = TRANSLATION_EDITIONS.get(lang, TRANSLATION_EDITIONS["en"])
-    
+    """Diyanet'ten doğrudan sayfa meali çeker"""
+    edition = TRANSLATION_EDITIONS.get(lang, "tr.diyanet")
     try:
-        # Page mapping: Our 614-page mushaf to API's 604-page standard
-        # Direct 1:1 mapping for pages 1-604
-        standard_page = page_number
-        if standard_page > 604:
-            standard_page = 604
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get Arabic text (always)
-            arabic_url = f"{QURAN_API_BASE}/page/{standard_page}/quran-uthmani"
-            arabic_resp = await client.get(arabic_url)
-            
-            # Get translation in requested language
-            translation_url = f"{QURAN_API_BASE}/page/{standard_page}/{edition}"
-            translation_resp = await client.get(translation_url)
-            
-            if arabic_resp.status_code != 200:
-                raise HTTPException(status_code=404, detail="Page not found")
-            
-            arabic_data = arabic_resp.json()
-            translation_data = translation_resp.json() if translation_resp.status_code == 200 else None
-            
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            url = f"{QURAN_API_BASE}/page/{page_number}/editions/quran-uthmani,{edition}"
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return {"status": "error", "message": "API cevap vermiyor"}
+            data = resp.json().get("data", [])
             ayahs = []
-            arabic_ayahs = arabic_data.get('data', {}).get('ayahs', [])
-            translation_ayahs = translation_data.get('data', {}).get('ayahs', []) if translation_data else []
-            
-            for i, ayah in enumerate(arabic_ayahs):
-                ayah_data = {
+            for i, ayah in enumerate(data[0].get('ayahs', [])):
+                ayahs.append({
                     "number": ayah.get('number'),
                     "numberInSurah": ayah.get('numberInSurah'),
-                    "surah": ayah.get('surah', {}).get('number'),
-                    "surahName": ayah.get('surah', {}).get('name'),
-                    "surahEnglishName": ayah.get('surah', {}).get('englishName'),
                     "arabic": ayah.get('text'),
-                    "translation": translation_ayahs[i].get('text') if i < len(translation_ayahs) else ""
-                }
-                ayahs.append(ayah_data)
-            
-            return {
-                "page": page_number,
-                "standard_page": standard_page,
-                "language": lang,
-                "edition": edition,
-                "ayahs": ayahs,
-                "total_ayahs": len(ayahs)
-            }
-    except HTTPException:
-        raise
+                    "translation": data[1].get('ayahs', [])[i].get('text') if len(data) > 1 else ""
+                })
+            return {"page": page_number, "ayahs": ayahs}
     except Exception as e:
-        logging.error(f"Translation fetch error for {lang}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
 
 @api_router.get("/quran/meal/surah/{surah_number}")
 async def get_meal_for_surah(surah_number: int):
-    """
-    Get Turkish translation (Meal) for a complete surah.
-    """
-    if surah_number < 1 or surah_number > 114:
-        raise HTTPException(status_code=400, detail="Invalid surah number (1-114)")
-    
+    """Sure mealini doğrudan getirir"""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get Arabic text
-            arabic_url = f"{QURAN_API_BASE}/surah/{surah_number}/quran-uthmani"
-            arabic_resp = await client.get(arabic_url)
-            
-            # Get Turkish translation (Diyanet)
-            turkish_url = f"{QURAN_API_BASE}/surah/{surah_number}/tr.diyanet"
-            turkish_resp = await client.get(turkish_url)
-            
-            if arabic_resp.status_code != 200:
-                raise HTTPException(status_code=404, detail="Surah not found")
-            
-            arabic_data = arabic_resp.json()
-            turkish_data = turkish_resp.json() if turkish_resp.status_code == 200 else None
-            
-            surah_info = arabic_data.get('data', {})
-            arabic_ayahs = surah_info.get('ayahs', [])
-            turkish_ayahs = turkish_data.get('data', {}).get('ayahs', []) if turkish_data else []
-            
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            url = f"{QURAN_API_BASE}/surah/{surah_number}/editions/quran-uthmani,tr.diyanet"
+            resp = await client.get(url)
+            data = resp.json().get("data", [])
             ayahs = []
-            for i, ayah in enumerate(arabic_ayahs):
-                ayah_data = {
+            for i, ayah in enumerate(data[0].get('ayahs', [])):
+                ayahs.append({
                     "number": ayah.get('number'),
                     "numberInSurah": ayah.get('numberInSurah'),
                     "arabic": ayah.get('text'),
-                    "turkish": turkish_ayahs[i].get('text') if i < len(turkish_ayahs) else ""
-                }
-                ayahs.append(ayah_data)
-            
-            return {
-                "surah": surah_number,
-                "name": surah_info.get('name'),
-                "englishName": surah_info.get('englishName'),
-                "englishNameTranslation": surah_info.get('englishNameTranslation'),
-                "revelationType": surah_info.get('revelationType'),
-                "numberOfAyahs": surah_info.get('numberOfAyahs'),
-                "ayahs": ayahs
-            }
-    except HTTPException:
-        raise
+                    "translation": data[1].get('ayahs', [])[i].get('text') if len(data) > 1 else ""
+                })
+            return {"surah": surah_number, "name": data[0].get('name'), "ayahs": ayahs}
     except Exception as e:
-        logging.error(f"Surah meal fetch error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
+            
 
 # ================== QURAN PAGE IMAGE SERVING ==================
 
