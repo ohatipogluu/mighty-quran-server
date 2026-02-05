@@ -14,6 +14,7 @@ from datetime import datetime, date, timedelta
 import math
 from geopy.distance import geodesic
 import httpx
+import google.generativeai as genai
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -34,25 +35,25 @@ PORT = int(os.environ.get("PORT", 8000))
 logger.info(f"Server will start on port: {PORT}")
 
 # ============================================================
-# LLM CONFIGURATION - EASY SWAP
+# GOOGLE GEMINI CONFIG
 # ============================================================
-LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'emergent')
+# Önce ortam değişkenine bak, yoksa verdiğin key'i kullan
+GOOGLE_GEMINI_API_KEY = os.environ.get(
+    "GOOGLE_GEMINI_KEY",
+    "AIzaSyDFEp04Tn5MNPLeRuuUbHqVfOIeqSlbGxs"
+)
+
+if not GOOGLE_GEMINI_API_KEY:
+    logger.warning("⚠️ Google Gemini API key is NOT configured. Chat will fail.")
 
 def get_llm_config():
-    """Get LLM API key and provider based on configuration"""
-    if LLM_PROVIDER == 'google':
-        api_key = os.environ.get('GOOGLE_GEMINI_KEY')
-        if not api_key:
-            raise ValueError("GOOGLE_GEMINI_KEY not set in .env")
-        return {'provider': 'google', 'api_key': api_key}
-    else:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            raise ValueError("EMERGENT_LLM_KEY not set in .env")
-        return {'provider': 'emergent', 'api_key': api_key}
-
-if LLM_PROVIDER == 'emergent':
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    """
+    Tek provider: Google Gemini
+    İleride istersen buraya başka provider da ekleyebiliriz.
+    """
+    if not GOOGLE_GEMINI_API_KEY:
+        raise ValueError("Google Gemini API key not set")
+    return {"provider": "google", "api_key": GOOGLE_GEMINI_API_KEY}
 
 # ============================================================
 # MONGODB CONNECTION (Non-blocking with fallback)
@@ -524,6 +525,9 @@ async def calculate_zakat(request: ZakatRequest):
 async def chat_with_assistant(request: ChatRequest):
     """Chat with the Quranic AI Assistant"""
     try:
+        if not GOOGLE_GEMINI_API_KEY:
+            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+
         system_messages = {
             "tr": """Sen bir Kur'an Asistanısın. SADECE kullanıcının sorusuna göre Kur'an'dan ilgili ayetleri bul ve göster.
 
@@ -580,18 +584,22 @@ Format your response as:
         
         system_message = system_messages.get(request.language, system_messages["tr"])
         llm_config = get_llm_config()
-        
-        if llm_config['provider'] == 'emergent':
-            chat = LlmChat(
-                api_key=llm_config['api_key'],
-                session_id=request.session_id,
-                system_message=system_message
-            ).with_model("gemini", "gemini-2.5-flash")
-            
-            user_message = UserMessage(text=request.message)
-            response = await chat.send_message(user_message)
+
+        # Google Gemini ile cevap üret
+        if llm_config["provider"] == "google":
+            genai.configure(api_key=llm_config["api_key"])
+            model = genai.GenerativeModel("gemini-1.5-flash")
+
+            prompt_parts = [
+                {"role": "user", "parts": [f"Sistem rolün:\n{system_message}"]},
+                {"role": "user", "parts": [request.message]},
+            ]
+
+            response = model.generate_content(prompt_parts)
+            answer_text = response.text if hasattr(response, "text") else str(response)
         else:
-            raise HTTPException(status_code=501, detail="Native Google Gemini not implemented")
+            # Şu an başka provider yok
+            raise HTTPException(status_code=500, detail="LLM provider misconfigured")
         
         # Store messages (only if DB is connected)
         if DB_CONNECTED and db is not None:
@@ -599,12 +607,14 @@ Format your response as:
                 user_msg = ChatMessage(session_id=request.session_id, role="user", content=request.message)
                 await db.chat_messages.insert_one(user_msg.dict())
                 
-                assistant_msg = ChatMessage(session_id=request.session_id, role="assistant", content=response)
+                assistant_msg = ChatMessage(session_id=request.session_id, role="assistant", content=answer_text)
                 await db.chat_messages.insert_one(assistant_msg.dict())
             except Exception as db_err:
                 logger.warning(f"Failed to save chat to DB: {db_err}")
         
-        return ChatResponse(response=response, session_id=request.session_id)
+        return ChatResponse(response=answer_text, session_id=request.session_id)
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -661,31 +671,21 @@ async def get_meal_for_page(page_number: int, lang: str = "tr"):
     Parameters:
     - page_number: 1-614 (Diyanet Mushaf pages)
     - lang: Language code (tr, en, ar, de, fr, id, ur, ru). Default: tr
-    
-    Editions:
-    - Turkish (tr): Diyanet İşleri Başkanlığı
-    - English (en): Sahih International
-    - Arabic (ar): Tafseer Muyassar
     """
     if page_number < 1 or page_number > 614:
         raise HTTPException(status_code=400, detail="Invalid page number (1-614)")
     
-    # Select translation edition based on language
     edition = TRANSLATION_EDITIONS.get(lang, TRANSLATION_EDITIONS["en"])
     
     try:
-        # Page mapping: Our 614-page mushaf to API's 604-page standard
-        # Direct 1:1 mapping for pages 1-604
         standard_page = page_number
         if standard_page > 604:
             standard_page = 604
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get Arabic text (always)
             arabic_url = f"{QURAN_API_BASE}/page/{standard_page}/quran-uthmani"
             arabic_resp = await client.get(arabic_url)
             
-            # Get translation in requested language
             translation_url = f"{QURAN_API_BASE}/page/{standard_page}/{edition}"
             translation_resp = await client.get(translation_url)
             
@@ -735,11 +735,9 @@ async def get_meal_for_surah(surah_number: int):
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get Arabic text
             arabic_url = f"{QURAN_API_BASE}/surah/{surah_number}/quran-uthmani"
             arabic_resp = await client.get(arabic_url)
             
-            # Get Turkish translation (Diyanet)
             turkish_url = f"{QURAN_API_BASE}/surah/{surah_number}/tr.diyanet"
             turkish_resp = await client.get(turkish_url)
             
