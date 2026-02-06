@@ -36,30 +36,29 @@ logger.info(f"Server will start on port: {PORT}")
 # ============================================================
 # GEMINI LLM CONFIGURATION (NO EMERGENT)
 # ============================================================
-# Render → Environment:
-#   GOOGLE_GEMINI_KEY = senin API key
+# IMPORTANT:
+# - Set GOOGLE_GEMINI_KEY in Render → Environment
+# - We call Google Generative Language REST API directly with httpx
 GEMINI_API_KEY = os.environ.get("GOOGLE_GEMINI_KEY")
 
 if not GEMINI_API_KEY:
-    logger.warning(
-        "GOOGLE_GEMINI_KEY not set - /api/chat will return error until configured"
-    )
+    logger.warning("GOOGLE_GEMINI_KEY not set - /api/chat will return error until configured")
 
-# Daha yaygın ve stabil model
-GEMINI_MODEL = "models/gemini-1.0-pro"
+# Model ve endpoint (v1, models/ prefix OTOMATİK URL'de olacak)
+GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_ENDPOINT = (
-    f"https://generativelanguage.googleapis.com/v1beta/{GEMINI_MODEL}:generateContent"
+    f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent"
 )
-
 
 async def call_gemini(system_message: str, user_message: str) -> str:
     """
-    Gemini'ye istek atan yardımcı fonksiyon.
-    Sistem promptu + kullanıcı sorusu tek bir text içinde gönderiliyor.
+    Call Gemini with a strict Quran-only assistant prompt.
+    Returns plain text answer from model.
     """
     if not GEMINI_API_KEY:
         raise HTTPException(
-            status_code=500, detail="Gemini API key not configured on server"
+            status_code=500,
+            detail="Gemini API key not configured on server"
         )
 
     payload = {
@@ -68,6 +67,7 @@ async def call_gemini(system_message: str, user_message: str) -> str:
                 "role": "user",
                 "parts": [
                     {
+                        # Tek bir `text` içine hem sistem talimatı hem kullanıcı sorusu:
                         "text": f"{system_message}\n\nKullanıcı sorusu:\n{user_message}"
                     }
                 ],
@@ -90,6 +90,13 @@ async def call_gemini(system_message: str, user_message: str) -> str:
         logger.error(f"Gemini API error {resp.status_code}: {resp.text}")
         raise HTTPException(status_code=500, detail="Gemini API error")
 
+    data = resp.json()
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return text.strip()
+    except Exception as e:
+        logger.error(f"Gemini response parse error: {e} | raw={data}")
+        raise HTTPException(status_code=500, detail="Gemini response parse error")
     data = resp.json()
     try:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
