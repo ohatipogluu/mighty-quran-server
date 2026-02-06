@@ -45,9 +45,9 @@ if not GEMINI_API_KEY:
     logger.warning("GOOGLE_GEMINI_KEY not set - /api/chat will return error until configured")
 
 # Model ve endpoint (v1, models/ prefix OTOMATİK URL'de olacak)
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_ENDPOINT = (
-    f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent"
+    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 )
 
 async def call_gemini(system_message: str, user_message: str) -> str:
